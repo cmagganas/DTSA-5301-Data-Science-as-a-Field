@@ -1,0 +1,153 @@
+---
+title: "Final Project 2 - Reproducible Report on COVID19 Data"
+author: "C. Magganas"
+date: '2022-04-22'
+output:
+  html_document:
+    df_print: paged
+    code_folding: hide
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+The purpose of this report is to analyze the [Johns Hopkins University COVID-19 Data Repository](https://github.com/CSSEGISandData/COVID-19)
+, a data repository for the 2019 Novel Coronavirus Visual Dashboard operated by the Johns Hopkins University Center. Using the toolkit available to us in R, I intend to explore the dataset, ask questions and make recommendations based on any findings.
+
+### Load tidyverse
+```{r load tidyverse, warning=FALSE, message=FALSE}
+library('tidyverse')
+library('lubridate')
+library('ggformula')
+library('choroplethr')
+```
+
+## Tidy and Transform Your Data
+### Load CSV files + datatype changes
+```{r load data, message=FALSE}
+# assign URL file names
+url_in <- paste0("https://raw.githubusercontent.com/CSSEGISandData/",
+  "COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/")
+file_names <- c("time_series_covid19_confirmed_global.csv",
+                "time_series_covid19_deaths_global.csv",
+                "time_series_covid19_confirmed_US.csv",
+                "time_series_covid19_deaths_US.csv")
+urls <- str_c(url_in,file_names)
+
+# Load csv from URL & Tidy & Transform
+global_cases <- read_csv(urls[1])
+global_cases <- global_cases %>%
+  select(-c('Province/State',Lat,Long)) %>%
+  pivot_longer(cols = -c('Country/Region'),
+               names_to = "date",
+               values_to = "cases") %>%
+  rename(Country_Region = 'Country/Region')
+global_deaths <- read_csv(urls[2])
+global_deaths <- global_deaths %>%
+  select(-c('Province/State',Lat,Long)) %>%
+  pivot_longer(cols = -c('Country/Region'),
+               names_to = "date",
+               values_to = "deaths") %>%
+  rename(Country_Region = 'Country/Region')
+global <- global_deaths %>%
+  full_join(global_cases) %>% 
+  mutate(date = mdy(date))
+rm(global_cases, global_deaths)
+
+US_cases <- read_csv(urls[3])
+US_cases <- US_cases %>%
+  select(-c(UID,iso2,iso3,code3,FIPS,Admin2,Lat,Long_,Combined_Key)) %>%
+  pivot_longer(cols = -c(Province_State,
+                         Country_Region),
+               names_to = "date",
+               values_to = "cases") %>%
+  group_by(Province_State,date) %>%
+  summarise(cases = sum(cases)) %>%
+  mutate(date = mdy(date))
+  
+US_deaths <- read_csv(urls[4])
+US_deaths <- US_deaths %>%
+  select(-c(UID,iso2,iso3,code3,FIPS,Admin2,Lat,Long_,Combined_Key,Population)) %>%
+  pivot_longer(cols = -c(Province_State,
+                         Country_Region),
+               names_to = "date",
+               values_to = "deaths") %>%
+  group_by(Province_State,date) %>%
+  summarise(deaths = sum(deaths)) %>%
+  mutate(date = mdy(date))
+
+# join US deaths and cases together by state and date
+US <- US_deaths %>% full_join(US_cases) %>% rename(state = Province_State)
+US <- US[order(US$state,US$date),]
+rm(US_cases, US_deaths)
+
+# derive new death and cases by day
+US <- US %>% group_by(state) %>% mutate(new_deaths = deaths - lag(deaths),
+                                        new_cases = cases - lag(cases))
+
+# show head
+US
+```
+
+### New Year's 2022 Omicron Spike (USA)
+```{r NYE spike, warning=FALSE, message=FALSE}
+# show new cases from Dec'21 w/ 7 day average
+omicron_spike <- US %>%
+  filter(date > "2021-12-01") %>%
+  group_by(date) %>%
+  summarise(new_cases = sum(new_cases)) %>%
+  mutate(cases7da = zoo::rollmean(new_cases, k = 7, fill = NA))
+# plot
+ggplot(omicron_spike, aes(x=date)) + 
+  geom_line(aes(y = new_cases), color = "steelblue") + 
+  geom_line(aes(y = cases7da), color="red") +
+  geom_vline(xintercept = as.Date('2021-12-25')) +
+  geom_vline(xintercept = as.Date('2022-01-01'))
+```
+
+As we can see, following the Holidays starting in late December, there were many new cases of COVID-19. Cases plotted in blue, 7 day average in red, and the vertical lines represent Christmas and New Years respectively. As many people gathered for the holidays, cases started to increase (with approximately a 3 day incubation period i.e. lag). The data shows on which day people were testing positive. The blue dips occur on weekends when people are spending time together and the blue jumps are when the test themselves a few days later. The red line shows a smoother 7 days average of new cases per day. We can clearly see that many people (including myself) contracted COVID-19 during this holiday period and subsequently passed it along to others in the following weeks.
+
+
+### US Mortality Rate
+```{r US mortality graph, message=FALSE}
+
+# derive mortality rate and format
+US_mortality_rate <- US %>%
+  filter(!state %in% c("American Samoa","Diamond Princess","Grand Princess","Guam",
+                       "Northern Mariana Islands","Puerto Rico","Virgin Islands")) %>%
+  group_by(state) %>%
+  summarize(totDeaths = sum(deaths),
+            totConfirmed = sum(cases)) %>%
+  mutate(DR = 100 * totDeaths/totConfirmed) %>%
+  mutate(DR = round(DR,2)) %>%
+  arrange(-DR) %>%
+  select(state, DR) %>%
+  rename(region = 1, value = DR) %>%
+  mutate(region = tolower(region))
+
+# plot
+choro <- StateChoropleth$new(US_mortality_rate)
+choro$title <- "Mortality Rate (Deaths / Cases)"
+choro$ggplot_scale <- scale_fill_brewer(name="Mortality %", palette="YlOrRd", drop=FALSE)
+choro$render()
+```
+
+A detailed and reproducible report for how I derived the Feature Importance Rankings below can be found [here](https://github.com/cmagganas/DTSA-5301-Data-Science-as-a-Field/blob/main/Final-Project-2/2020_US_COVID_mortality_by_state.ipynb).
+
+I trained a Random Forest model on [US county health data](https://www.countyhealthrankings.org/explore-health-rankings/rankings-data-documentation) to predict COVID-19 mortality rate.
+
+Additionally, here is an [Interactive Map of Health Index by US county](https://www.bcbs.com/the-health-of-america/health-index/national-health-index)
+
+### 2020 COVID Mortality Rate Predictors by Feature Importance using Random Forest
+```{r US mortality features, message=FALSE, echo=FALSE}
+image_url <- paste0('https://raw.githubusercontent.com/cmagganas/DTSA-5301-Data-Science-as-a-Field/main/',
+                    'Final-Project-2/2020%20Mortality%20Rate%20Predictors%20by%20Feature%20Importance.png')
+knitr::include_graphics(image_url)
+```
+
+(I excluded Race, Gender and Age related attributes from the chart)
+
+## Closing Thoughts
+There is a lot of attention being given to ways in which COVID-19 spreads and how to effectively prevent it through means such as social distancing, hygiene, etc. In my opinion, less attention is given to comorbidities and other pre-existing health factors that certainly make COVID-19 more dangerous. It is important that we take all of these preventative measures seriously, but additionally taking further actions to identify health risks within ourselves and in our community, thereby reducing deaths. This analysis merely scratches the surface of which health related factors might play a role in reducing COVID related mortality, but I hope it does inspire those of you it reaches to investigate further and help be a part of the solution that will lead to a healthier society.
