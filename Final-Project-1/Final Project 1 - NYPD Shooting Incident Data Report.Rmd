@@ -1,0 +1,125 @@
+---
+title: "NYPD Shooting Incident Data (Historic)"
+author: "C. Magganas"
+date: '2022-04-22'
+output:
+  html_document:
+    df_print: paged
+    code_folding: show
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+  
+The purpose of this report is to analyze the [NYPD Shooting Incident Data](https://catalog.data.gov/dataset/nypd-shooting-incident-data-historic)
+, a list of every shooting incident that occurred in NYC going back to 2006 through the end of the previous calendar year. Using the toolkit available to us in R, I intend to explore the dataset, ask questions and make recommendations based on any findings.
+
+### Load packages
+```{r load packages, warning=FALSE, message=FALSE}
+library('tidyverse')
+library('sf')
+library('data.table')
+```
+
+## Tidy and Transform Your Data
+### Load csv files + datatype changes
+```{r load data, message=FALSE}
+# Load csv from URL
+NYPD_Shooting_Incident_Data <- read_csv(
+  "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv")
+# Change types and remove redundant rows
+NYPD_Shooting_Incident_Data <- NYPD_Shooting_Incident_Data %>% 
+  mutate(
+    OCCUR_DATE = as.Date(OCCUR_DATE, "%m/%d/%Y"),
+    PRECINCT = as.character(PRECINCT),
+    JURISDICTION_CODE = as.character(JURISDICTION_CODE)) %>% 
+  select(-c(X_COORD_CD, Y_COORD_CD))
+head(NYPD_Shooting_Incident_Data)
+```
+
+### Data Summary
+```{r data summary}
+summary(NYPD_Shooting_Incident_Data)
+```
+
+### Group By Borough, Year/Hour
+```{r by Boro per time-period, message=FALSE}
+Shootings_by_Boro_per_year <- NYPD_Shooting_Incident_Data %>%
+  group_by(BORO, YEAR = format(OCCUR_DATE, "%Y")) %>%
+  summarise(INCIDENTS = n())
+Shootings_by_Boro_per_hour <- NYPD_Shooting_Incident_Data %>%
+  group_by(BORO, HOUR = as.POSIXlt(OCCUR_TIME)$hour) %>%
+  summarise(INCIDENTS = n())
+```
+
+## Visualizations and Analysis
+### Map of NYC shootings
+```{r plot shootings map}
+ggplot(st_as_sf(NYPD_Shooting_Incident_Data,
+                coords = c("Longitude", "Latitude"))) +
+  geom_sf(aes(color = BORO))
+```
+  
+### Plot shootings by Borough per Year
+```{r plot shootings by Boro per Year}
+Shootings_by_Boro_per_year  %>%
+  ggplot(aes(x=YEAR, y=INCIDENTS, group = BORO)) +
+  geom_line(aes(color = BORO)) +
+  geom_point(aes(color = BORO)) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Shootings by Borough over time")
+```
+  
+It seems like total shootings have gone down over time, with the exception of 2020.
+This is likely due to COVID-19 lock-downs causing social distress and animosity.
+An initial guess would be that shootings and human overall well-being are related.
+
+### Plot shootings by Borough by Hour
+```{r plot shootings by Boro per Hour}
+Shootings_by_Boro_per_hour  %>%
+  ggplot(aes(x=HOUR, y=INCIDENTS, group = BORO)) +
+  geom_line(aes(color = BORO)) +
+  geom_point(aes(color = BORO)) +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Shootings by Borough over 24hr Day")
+```
+  
+This makes total sense, because people are asleep and at home in the mornings (less shootings).
+As the temperature rises, parties start and the liquor and substances flow, the number of shootings increase into the late night hours.
+With additional data and/or analysis we would likely see temperature, social gatherings and other factors relating to these trends.
+But that's just my bias...
+  
+### Model likelihood incident resulted in Murder
+#### (by TimeOfDay and DayOfWeek)
+```{r model Murder Likelihood, message=FALSE}
+
+Mur <- NYPD_Shooting_Incident_Data$STATISTICAL_MURDER_FLAG
+DoW <- weekdays(NYPD_Shooting_Incident_Data$OCCUR_DATE)
+ToD <- as.character(as.POSIXlt(NYPD_Shooting_Incident_Data$OCCUR_TIME)$hour)
+murder_table <- data.table(Mur,DoW,ToD)
+fit <- lm(Mur ~ DoW + ToD, data=murder_table)
+summary(fit)
+murder_table <- murder_table %>% mutate(pred = predict(fit))
+murder_pred <- murder_table %>% 
+  group_by(DoW,ToD) %>% summarise(avg_pred_mur = mean(pred), incidents = n()) %>% arrange(desc(avg_pred_mur))
+murder_pred
+```
+  
+By manipulating some of the available features in the dataset (I avoided using Age, Gender and Race) I determined that Time of Day and Day of the Week were the most useful variables to determine whether an incident resulted in murder or not (using statistical significance from summary of model). Borough turned out not to be a good predictor. By fitting a linear regression model to the target STATISTICAL_MURDER_FLAG using the Time of Day and Day of the Week features, I was able to estimate the likelihood that an incident would in murder given that time period. The way I derived this number was by predicting a murder, averaging the predictions by group and including a total count alongside it. Using this likelihood might give us an insight as to when shootings turn lethal, but could just as well be a side-effect of more important factors like daylight, temperature, social-events, shooter's intent, etc.
+Based on my analysis, I would recommend that more officers are dispatched where and when the shootings are most likely to occur.
+
+## Bias Identification
+As we look at this data, we initially look to confirm our own biases to quickly satisfy our curiosity for understanding this data and any solution we might come up with.
+It is important to keep this in consideration and ask ourselves what questions and/or alternative perspectives we can use to better understand what is happening.
+Additionally, there might be some bias in the data itself.
+The NYPD is not themselves unbiased and may have some incentive to favorable outcomes.
+These are only reported shootings and may not depict a population wide representation.
+Some factors include, who reports a shooting, police presence in these neighborhoods, etc.
+
+
+## Closing Thoughts
+This has been an informative exploration. Further analysis and additional data is required to make any real recommendations. In the future, I would combine different datasets together and involve experts on the subject matter before prescribing any plan of action.
